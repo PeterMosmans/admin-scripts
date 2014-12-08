@@ -19,6 +19,7 @@
 
 # TODO: backup all sites
 #       list all sites in main root
+#       create detection for existence of main web directory
 
 
 NAME="wordpress_backup"
@@ -51,13 +52,13 @@ cleanup() {
 
 main() {
     local webroot=$1
-    local website=$(basename ${webroot})
 
     if [[ "$#" -lt 1 ]]; then
         usage
         exit 0
     fi
 
+    local website=$(basename ${webroot})
     # check if the webroot is absolute or relative
     [[ ! $webroot =~ ^/ ]] && webroot=${mainweb}/$webroot
     if [ ! -d ${webroot} ]; then
@@ -99,6 +100,15 @@ usage () {
     echo "usage: $0 website [backupfile]"
     echo "          website can be relative from main web directory (${mainweb}), or absolute"
     echo "          default name of backupfile is /tmp/website.zip"
+    echo ""
+    if [ -d ${mainweb} ]; then
+        echo " current websites (directories) in ${mainweb}:"
+        pushd ${mainweb} &> /dev/null
+        ls -d */
+        popd  &> /dev/null
+    else
+        echo "NOTE: ${mainweb} doesn't exist locally, so use an absolute path"
+    fi
 }
 
 prettyprint() {

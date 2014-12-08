@@ -35,12 +35,17 @@ main() {
     # check if the webroot is absolute or relative
     [[ ! $webroot =~ ^/ ]] && webroot=${mainweb}/$webroot
 
+    if [[ "$#" -lt 1 ]]; then
+        usage
+        exit 0
+    fi
+
     if [ ! -d ${webroot} ]; then
         echo "ERROR: could not find ${webroot}"
         exit 1
     fi
 
-    if [ "$#"  -eq 1 ]; then
+    if [ "$#" -eq 1 ]; then
         list_plugins ${webroot}/${pluginpath}
     else
         if [ -d ${fullpath}/$2 ]; then
@@ -90,6 +95,15 @@ usage() {
     echo "usage: $0 website pluginname [version]"
     echo ""
     echo "          website can be relative from main web directory (${mainweb}), or absolute"
+    echo ""
+    if [ -d ${mainweb} ]; then
+        echo " current websites (directories) in ${mainweb}:"
+        pushd ${mainweb} &> /dev/null
+        ls -d */
+        popd  &> /dev/null
+    else
+        echo "NOTE: ${mainweb} doesn't exist locally, so use an absolute path"
+    fi
 }
 
 main "$@"
