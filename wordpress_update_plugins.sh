@@ -18,49 +18,132 @@
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 # TODO: action for removal of plugin
-#       update all plugins automatically
+
 
 NAME="wordpress_update_plugins"
 
-# constants
-websource="https://downloads.wordpress.org/plugin"
-pluginpath="wp-content/plugins"
+# defaults
+group="webjail"
 mainweb=/var/www
+pluginpath="wp-content/plugins"
+owner="webjail"
+websource="https://downloads.wordpress.org/plugin"
 
+# internal parameters
+do_update_all=false
+do_list_plugins=false
+
+# main function first, the rest is ordered alphabetically
 main() {
-    local webroot=$1
-    local plugin=$2
-    local version=$3
-    local fullpath=${1}/${pluginpath}
-    # check if the webroot is absolute or relative
-    [[ ! $webroot =~ ^/ ]] && webroot=${mainweb}/$webroot
-
-    if [[ "$#" -lt 1 ]]; then
-        usage
-        exit 0
+    parse_options "$@"
+    echo "BETA VERSION - bugs are present and not all features are correctly implemented"
+    
+    if [[ $do_list_plugins || $do_update_all ]]; then
+        local list=$(list_plugins "${fullpath}")
     fi
-
-    if [ ! -d ${webroot} ]; then
-        echo "ERROR: could not find ${webroot}"
-        exit 1
-    fi
-
-    if [ "$#" -eq 1 ]; then
-        list_plugins ${webroot}/${pluginpath}
-    else
-        if [ -d ${fullpath}/$2 ]; then
-            echo updating $2
+    
+    if $do_list_plugins; then
+        if [ -z "$list" ]; then
+            echo "could not find any plugins.. is this a valid WordPress installation path ?" >&2
+            return
         else
-            echo installing $2
+            echo "list of installed plugins in ${fullpath}:"
+            echo "${list}"
         fi
-        update_plugin "${webroot}/${pluginpath}" $plugin $version
+    fi
+    if $do_update_all; then
+        echo "updating all plugins"
+        while read plugin; do
+            echo updating $plugin
+            update_plugin "${fullpath}" $plugin
+            if [ $? -ne 0 ]; then
+                echo "${plugin} not updated.." >&2
+            fi
+        done <<< "${list}"
     fi
 }
 
 list_plugins() {
     local plugindir=$1
-    ll ${plugindir}
+    if [ -d ${plugindir} ]; then
+        pushd ${plugindir} &> /dev/null
+        ls -d */ 2>/dev/null|sed -e 's/\/$//'
+        popd  &> /dev/null
+    fi
 }
+
+parse_options() {
+    # check if any parameters are specified
+    if [[ "$#" -lt 1 ]]; then
+        usage
+        exit 0
+    fi
+    
+    # check if valid options are specified
+    if ! options=$(getopt -o :a -l all,list -- "$@") ; then
+        usage
+        exit 1
+    fi
+
+    # make sure that quoted options are treated correctly as one option
+    eval set -- $options
+
+    # set basic option if only one parameter (website) is specified
+    if [[ "$#" -eq 2 ]] && ! [[ $2 =~ ^- ]]; then
+        do_list_plugins=true
+    fi
+
+    while [[ -n "$1" ]]; do
+        case $1 in
+            -a|--all)
+                do_update_all=true;;
+            --list)
+                do_list_plugins=true;;
+            (--)
+                shift
+                break;;
+            (-*) echo "$0: unrecognized option $1" >&2;;
+        esac
+        shift
+    done
+    
+    if [ "$#" -lt 1 ]; then
+        echo "ERROR: no webroot specified" >&2
+        exit 1
+    fi
+    
+    webroot="$1"
+
+    # check if the webroot is absolute or relative
+    [[ ! "${webroot}" =~ ^/ ]] && webroot="${mainweb}/${webroot}"
+    
+    # check if the specified webroot exists
+    if [ ! -d "${webroot}" ]; then
+        echo "ERROR: could not find ${webroot}" >&2
+        exit 1
+    fi
+
+    fullpath="${webroot}/${pluginpath}"
+    plugin=$2
+    version=$3
+}
+
+retrieve_owner() {
+    local plugindir=$1
+    owner_group="${owner}:${group}"
+    if [ -d ${plugindir} ]; then
+        owner_group=$(ls -ld ${plugindir}|awk '{printf $3":"$4}')
+    fi
+}
+
+update_all() {
+    local plugindir=$1
+    local all_plugins=$(list_plugins $plugindir)
+    while read plugin; do
+        echo updating $plugin
+    done < $(all_plugins)
+}
+
 update_plugin() {
     local plugindir=$1
     local plugin=$2
@@ -74,18 +157,20 @@ update_plugin() {
     echo "downloading ${plugin} from ${websource}"
     wget --unlink -NqO /tmp/${plugin}.zip ${websource}/${file}.zip 1>/dev/null
     if [ $? -ne 0 ]; then
-        echo "ERROR while downloading latest version..."
-        exit 1
+        echo "ERROR while downloading latest version" >&2
+        return 1
     fi
     echo "unzipping ${plugin}"
     # -o overwrite (don't ask questions)
     # -u update files and create new ones
     unzip -ou /tmp/${plugin}.zip -d ${plugindir} 1>/dev/null
     if [ $? -ne 0 ]; then
-        echo "ERROR while unzipping ${plugin}..."
-        exit 1
+        echo "ERROR while unzipping ${plugin}..." >&2
+        return 1
     fi
-    chown -R webjail.webjail ${plugindir}/${plugin} 1>/dev/null
+    retrieve_owner "${plugindir}"
+    echo "changing owner and group to ${owner_group}"
+    chown -R "${owner_group}" ${plugindir}/${plugin} 1>/dev/null
     rm -f /tmp/${plugin}.zip
 }
 
@@ -96,10 +181,16 @@ usage() {
     echo ""
     echo "          website can be relative from main web directory (${mainweb}), or absolute"
     echo ""
+    echo "Options:"
+    echo " -a, --all               update all plugins (except when NO_AUTO_UPDATE flag is found)"
+    echo "     --list              list all currently installed plugins"
+    echo ""
+    echo "BETA VERSION - bugs are present and not all features are correctly implemented"
+    
     if [ -d ${mainweb} ]; then
         echo " current websites (directories) in ${mainweb}:"
         pushd ${mainweb} &> /dev/null
-        ls -d */
+        ls -d */|sed -e 's/\/$//'
         popd  &> /dev/null
     else
         echo "NOTE: ${mainweb} doesn't exist locally, so use an absolute path"
