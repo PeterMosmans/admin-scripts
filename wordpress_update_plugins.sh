@@ -17,133 +17,97 @@
 #    You should have received a copy of the GNU General Public License
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-# TODO: action for removal of plugin
 
+# TODO: action for removal of plugin
+# TODO: better error handling
+# TODO: create backup
 
 NAME="wordpress_update_plugins"
 
-# defaults
-group="webjail"
-mainweb=/var/www
-pluginpath="wp-content/plugins"
-owner="webjail"
+# constants
 websource="https://downloads.wordpress.org/plugin"
+pluginpath="wp-content/plugins"
 
-# internal parameters
-do_update_all=false
-do_list_plugins=false
-
-# main function first, the rest is ordered alphabetically
 main() {
+    initialize_globals
     parse_options "$@"
-    echo "BETA VERSION - bugs are present and not all features are correctly implemented"
-    
-    if [[ $do_list_plugins || $do_update_all ]]; then
-        local list=$(list_plugins "${fullpath}")
+    local fullpath=${webroot}/${pluginpath}
+    if [ ! -d ${webroot} ]; then
+        echo "ERROR: could not find ${webroot}"
+        exit 1
     fi
-    
-    if $do_list_plugins; then
-        if [ -z "$list" ]; then
-            echo "could not find any plugins.. is this a valid WordPress installation path ?" >&2
-            return
-        else
-            echo "list of installed plugins in ${fullpath}:"
-            echo "${list}"
-        fi
+
+    ${do_all} &&  update_all_plugins "${fullpath}"
+    ${do_list} && list_plugins "${fullpath}"
+    ${do_update} && update_plugin "${fullpath}" $plugin $version
+}
+
+initialize_globals() {
+     do_all=false
+     do_list=false
+     do_update=false
+     dry_run=
+     verbose=1>/dev/null
+ }
+
+update_all_plugins() {
+    echo updating all plugins...
+    local plugindir=$1
+    pushd ${plugindir} >&/dev/null
+    for plugin in $(ls -d */|sed -e "s/\/$//"); do
+        echo $plugin
+        update_plugin ${plugindir} ${plugin}
+    done
+    popd >&/dev/null
+ }
+parse_options() {
+    if ! options=$(getopt -o a,l,n -l all,dry-run,list -- "$@") ; then
+        usage
+        exit 1
     fi
-    if $do_update_all; then
-        echo "updating all plugins"
-        while read plugin; do
-            echo updating $plugin
-            update_plugin "${fullpath}" $plugin
-            if [ $? -ne 0 ]; then
-                echo "${plugin} not updated.." >&2
-            fi
-        done <<< "${list}"
+
+    eval set -- $options
+    if [[ "$#" -le 1 ]]; then
+        usage
+        exit 1
     fi
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -a|--all)
+                do_all=true;;
+            -l|--list)
+                do_list=true;;
+            -n|--dry-run)
+                dry_run=echo
+                verbose=
+                ;;
+            (--) shift;
+                 break;;
+            (*)  break;;
+        esac
+        shift
+    done
+
+    if [ -z "$1" ]; then
+        echo "ERROR: please specify webroot (eg. /var/www/my.website )"
+        exit 1
+    fi
+
+    webroot=$1
+    if [ ! -z $2 ]; then
+        plugin=$2
+        do_update=TRUE
+    fi
+    version=$3
 }
 
 list_plugins() {
     local plugindir=$1
-    if [ -d ${plugindir} ]; then
-        pushd ${plugindir} &> /dev/null
-        ls -d */ 2>/dev/null|sed -e 's/\/$//'
-        popd  &> /dev/null
-    fi
+    pushd ${plugindir}
+    ls -d */
+    popd >&/dev/null
 }
-
-parse_options() {
-    # check if any parameters are specified
-    if [[ "$#" -lt 1 ]]; then
-        usage
-        exit 0
-    fi
-    
-    # check if valid options are specified
-    if ! options=$(getopt -o :a -l all,list -- "$@") ; then
-        usage
-        exit 1
-    fi
-
-    # make sure that quoted options are treated correctly as one option
-    eval set -- $options
-
-    # set basic option if only one parameter (website) is specified
-    if [[ "$#" -eq 2 ]] && ! [[ $2 =~ ^- ]]; then
-        do_list_plugins=true
-    fi
-
-    while [[ -n "$1" ]]; do
-        case $1 in
-            -a|--all)
-                do_update_all=true;;
-            --list)
-                do_list_plugins=true;;
-            (--)
-                shift
-                break;;
-            (-*) echo "$0: unrecognized option $1" >&2;;
-        esac
-        shift
-    done
-    
-    if [ "$#" -lt 1 ]; then
-        echo "ERROR: no webroot specified" >&2
-        exit 1
-    fi
-    
-    webroot="$1"
-
-    # check if the webroot is absolute or relative
-    [[ ! "${webroot}" =~ ^/ ]] && webroot="${mainweb}/${webroot}"
-    
-    # check if the specified webroot exists
-    if [ ! -d "${webroot}" ]; then
-        echo "ERROR: could not find ${webroot}" >&2
-        exit 1
-    fi
-
-    fullpath="${webroot}/${pluginpath}"
-    plugin=$2
-    version=$3
-}
-
-retrieve_owner() {
-    local plugindir=$1
-    owner_group="${owner}:${group}"
-    if [ -d ${plugindir} ]; then
-        owner_group=$(ls -ld ${plugindir}|awk '{printf $3":"$4}')
-    fi
-}
-
-update_all() {
-    local plugindir=$1
-    local all_plugins=$(list_plugins $plugindir)
-    while read plugin; do
-        echo updating $plugin
-    done < $(all_plugins)
-}
-
 update_plugin() {
     local plugindir=$1
     local plugin=$2
@@ -155,46 +119,36 @@ update_plugin() {
         local file=${plugin}
     fi
     echo "downloading ${plugin} from ${websource}"
-    wget --unlink -NqO /tmp/${plugin}.zip ${websource}/${file}.zip 1>/dev/null
+    ${dry_run} wget --unlink -NqO /tmp/${plugin}.zip ${websource}/${file}.zip
     if [ $? -ne 0 ]; then
-        echo "ERROR while downloading latest version" >&2
+        echo "ERROR while downloading version..."
         return 1
+    else
+        echo "unzipping ${plugin}"
+        # -o overwrite (don't ask questions)
+        # -u update files and create new ones
+        ${dry_run} unzip -ou /tmp/${plugin}.zip -d ${plugindir}
+        if [ $? -ne 0 ]; then
+            echo "ERROR while unzipping ${plugin}..."
+        else
+            ${dry_run} chown -R webjail.webjail ${plugindir}/${plugin}
+            ${dry_run} rm -f /tmp/${plugin}.zip
+        fi
     fi
-    echo "unzipping ${plugin}"
-    # -o overwrite (don't ask questions)
-    # -u update files and create new ones
-    unzip -ou /tmp/${plugin}.zip -d ${plugindir} 1>/dev/null
-    if [ $? -ne 0 ]; then
-        echo "ERROR while unzipping ${plugin}..." >&2
-        return 1
-    fi
-    retrieve_owner "${plugindir}"
-    echo "changing owner and group to ${owner_group}"
-    chown -R "${owner_group}" ${plugindir}/${plugin} 1>/dev/null
-    rm -f /tmp/${plugin}.zip
 }
 
 usage() {
-    echo "Updates Wordpress plugins"
-    echo ""
-    echo "usage: $0 website pluginname [version]"
-    echo ""
-    echo "          website can be relative from main web directory (${mainweb}), or absolute"
-    echo ""
-    echo "Options:"
-    echo " -a, --all               update all plugins (except when NO_AUTO_UPDATE flag is found)"
-    echo "     --list              list all currently installed plugins"
-    echo ""
-    echo "BETA VERSION - bugs are present and not all features are correctly implemented"
-    
-    if [ -d ${mainweb} ]; then
-        echo " current websites (directories) in ${mainweb}:"
-        pushd ${mainweb} &> /dev/null
-        ls -d */|sed -e 's/\/$//'
-        popd  &> /dev/null
-    else
-        echo "NOTE: ${mainweb} doesn't exist locally, so use an absolute path"
-    fi
+    cat << EOF
+Updates Wordpress plugins
+
+usage: $0 webroot [OPTION]...  [PLUGINNAME]
+
+Options:
+-a, --all       update all plugins
+-l, --list      list all installed plugins
+-n  --dry-run   don't actually do anything, just show what would be done
+
+EOF
 }
 
 main "$@"
